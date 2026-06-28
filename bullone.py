@@ -11,6 +11,18 @@ Fixes from v3:
 """
 
 import requests, json, time, uuid, struct, sys, os
+from pathlib import Path
+
+# Load .env file if present
+_ENV_FILE = Path(__file__).parent / ".env"
+if _ENV_FILE.exists():
+    with open(_ENV_FILE) as f:
+        for line in f:
+            line = line.strip()
+            if line and not line.startswith("#") and "=" in line:
+                key, _, val = line.partition("=")
+                os.environ.setdefault(key.strip(), val.strip())
+
 from eth_account import Account
 from eth_account.messages import encode_defunct, encode_typed_data
 from web3 import Web3

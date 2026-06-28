@@ -522,6 +522,135 @@ def pay_chain_transfer():
     return success
 
 
+def pay_standard_transfer(session):
+    """Standard transfer via pay chain — single entry to wallet address (hex)."""
+    TOKEN = USDT_CORE  # USDT on pay chain
+    AMOUNT = 1000000   # 1 USDT
+
+    DOMAIN = {"name": "PayChain", "version": "1", "chainId": CHAIN_IDS["pay"], "verifyingContract": ZERO_ADDR}
+    EIP712 = [{"name":"name","type":"string"},{"name":"version","type":"string"},
+              {"name":"chainId","type":"uint256"},{"name":"verifyingContract","type":"address"}]
+    TYPES = {
+        "EIP712Domain": EIP712,
+        "TransferEntry": [{"name":"to","type":"bytes"},{"name":"amount","type":"uint128"},{"name":"memo","type":"bytes"}],
+        "Transfer": [{"name":"nonce","type":"uint64"},{"name":"token","type":"address"},{"name":"entries","type":"TransferEntry[]"}],
+    }
+
+    r = session.post(f"{BULLONE}/api/proxy/pay-rpc",
+        json={"jsonrpc":"2.0","id":1,"method":"pay_getTransactionCount","params":[WALLET_ADDR, "latest"]},
+        headers={"Content-Type": "application/json"})
+    nonce_val = int(r.json().get("result", "0x0"), 16)
+
+    # Destination: self (standard transfer to own wallet address)
+    dest_bytes = bytes.fromhex(WALLET_ADDR[2:])
+
+    msg = {"nonce": nonce_val, "token": TOKEN,
+           "entries": [{"to": dest_bytes, "amount": AMOUNT, "memo": b""}]}
+    full = {"types": TYPES, "primaryType": "Transfer", "domain": DOMAIN, "message": msg}
+    signable = encode_typed_data(full_message=full)
+    signed = acct.sign_message(signable)
+    sig = parse_sig(signed.signature.hex())
+
+    action = {"type": "transfer", "token": TOKEN,
+              "entries": [{"to": WALLET_ADDR, "amount": hex(AMOUNT), "memo": "0x"}]}
+    params = {"nonce": nonce_val, "action": action, "signature": sig}
+
+    r = session.post(f"{BULLONE}/api/proxy/pay-rpc",
+        json={"jsonrpc":"2.0","id":1,"method":"pay_sendTransaction","params":[params]},
+        headers={"Content-Type": "application/json"})
+    resp = r.json()
+    success = resp.get("result") is not None
+    err = resp.get("error", {}).get("message", "") if not success else ""
+    print(f"  Standard transfer: {'✅' if success else '❌ ' + err[:80]}")
+    return success
+
+
+def pay_batch_transfer(session):
+    """Batch transfer via pay chain — multiple entries in one transaction."""
+    TOKEN = USDT_CORE
+    AMOUNT = 100000  # 0.1 USDT per entry
+    NUM_ENTRIES = 3
+
+    DOMAIN = {"name": "PayChain", "version": "1", "chainId": CHAIN_IDS["pay"], "verifyingContract": ZERO_ADDR}
+    EIP712 = [{"name":"name","type":"string"},{"name":"version","type":"string"},
+              {"name":"chainId","type":"uint256"},{"name":"verifyingContract","type":"address"}]
+    TYPES = {
+        "EIP712Domain": EIP712,
+        "TransferEntry": [{"name":"to","type":"bytes"},{"name":"amount","type":"uint128"},{"name":"memo","type":"bytes"}],
+        "Transfer": [{"name":"nonce","type":"uint64"},{"name":"token","type":"address"},{"name":"entries","type":"TransferEntry[]"}],
+    }
+
+    r = session.post(f"{BULLONE}/api/proxy/pay-rpc",
+        json={"jsonrpc":"2.0","id":1,"method":"pay_getTransactionCount","params":[WALLET_ADDR, "latest"]},
+        headers={"Content-Type": "application/json"})
+    nonce_val = int(r.json().get("result", "0x0"), 16)
+
+    dest_bytes = bytes.fromhex(WALLET_ADDR[2:])
+    entries = [{"to": dest_bytes, "amount": AMOUNT, "memo": b""} for _ in range(NUM_ENTRIES)]
+
+    msg = {"nonce": nonce_val, "token": TOKEN, "entries": entries}
+    full = {"types": TYPES, "primaryType": "Transfer", "domain": DOMAIN, "message": msg}
+    signable = encode_typed_data(full_message=full)
+    signed = acct.sign_message(signable)
+    sig = parse_sig(signed.signature.hex())
+
+    action_entries = [{"to": WALLET_ADDR, "amount": hex(AMOUNT), "memo": "0x"} for _ in range(NUM_ENTRIES)]
+    action = {"type": "transfer", "token": TOKEN, "entries": action_entries}
+    params = {"nonce": nonce_val, "action": action, "signature": sig}
+
+    r = session.post(f"{BULLONE}/api/proxy/pay-rpc",
+        json={"jsonrpc":"2.0","id":1,"method":"pay_sendTransaction","params":[params]},
+        headers={"Content-Type": "application/json"})
+    resp = r.json()
+    success = resp.get("result") is not None
+    err = resp.get("error", {}).get("message", "") if not success else ""
+    print(f"  Batch transfer ({NUM_ENTRIES}x): {'✅' if success else '❌ ' + err[:80]}")
+    return success
+
+
+def payee_receive_payment(session):
+    """Receive payment via payee account — transfer to self as payee (bech32)."""
+    PAYEE = "pp1h0p9jfvwgq5elnz79vqthep8t8k77xfpr0rvuw"
+    TOKEN = USDT_CORE
+    AMOUNT = 1000000  # 1 USDT
+
+    DOMAIN = {"name": "PayChain", "version": "1", "chainId": CHAIN_IDS["pay"], "verifyingContract": ZERO_ADDR}
+    EIP712 = [{"name":"name","type":"string"},{"name":"version","type":"string"},
+              {"name":"chainId","type":"uint256"},{"name":"verifyingContract","type":"address"}]
+    TYPES = {
+        "EIP712Domain": EIP712,
+        "TransferEntry": [{"name":"to","type":"bytes"},{"name":"amount","type":"uint128"},{"name":"memo","type":"bytes"}],
+        "Transfer": [{"name":"nonce","type":"uint64"},{"name":"token","type":"address"},{"name":"entries","type":"TransferEntry[]"}],
+    }
+
+    r = session.post(f"{BULLONE}/api/proxy/pay-rpc",
+        json={"jsonrpc":"2.0","id":1,"method":"pay_getTransactionCount","params":[WALLET_ADDR, "latest"]},
+        headers={"Content-Type": "application/json"})
+    nonce_val = int(r.json().get("result", "0x0"), 16)
+
+    payee_bytes = PAYEE.encode()
+
+    msg = {"nonce": nonce_val, "token": TOKEN,
+           "entries": [{"to": payee_bytes, "amount": AMOUNT, "memo": b""}]}
+    full = {"types": TYPES, "primaryType": "Transfer", "domain": DOMAIN, "message": msg}
+    signable = encode_typed_data(full_message=full)
+    signed = acct.sign_message(signable)
+    sig = parse_sig(signed.signature.hex())
+
+    action = {"type": "transfer", "token": TOKEN,
+              "entries": [{"to": PAYEE, "amount": hex(AMOUNT), "memo": "0x"}]}
+    params = {"nonce": nonce_val, "action": action, "signature": sig}
+
+    r = session.post(f"{BULLONE}/api/proxy/pay-rpc",
+        json={"jsonrpc":"2.0","id":1,"method":"pay_sendTransaction","params":[params]},
+        headers={"Content-Type": "application/json"})
+    resp = r.json()
+    success = resp.get("result") is not None
+    err = resp.get("error", {}).get("message", "") if not success else ""
+    print(f"  Payee receive payment: {'✅' if success else '❌ ' + err[:80]}")
+    return success
+
+
 def run_wallet(pk):
     """Run bot for a single wallet."""
     global acct, WALLET_ADDR
@@ -599,6 +728,24 @@ def run_wallet(pk):
         except Exception as e: print(f"  Pay transfer error: {e}")
     else:
         print("  Pay transfer: skip (daily, already done today)")
+
+    if should_run(task_map, "daily_standard_transfer"):
+        try: pay_standard_transfer(s)
+        except Exception as e: print(f"  Standard transfer error: {e}")
+    else:
+        print("  Standard transfer: skip (daily, already done today)")
+
+    if should_run(task_map, "daily_batch_transfer"):
+        try: pay_batch_transfer(s)
+        except Exception as e: print(f"  Batch transfer error: {e}")
+    else:
+        print("  Batch transfer: skip (daily, already done today)")
+
+    if should_run(task_map, "daily_payee_receive_payment"):
+        try: payee_receive_payment(s)
+        except Exception as e: print(f"  Receive payment error: {e}")
+    else:
+        print("  Receive payment: skip (daily, already done today)")
 
     # Wait for backend detection (retry with increasing delays)
     for delay, label in [(60, "1min"), (120, "2min"), (300, "5min")]:

@@ -522,6 +522,80 @@ def pay_chain_transfer():
     return success
 
 
+def pay_refund_order():
+    """Payee Refund — refund a received payment order via EIP-712 Refund action.
+    
+    Flow:
+    1. Check if payee account exists via pay_getPayee
+    2. Search for refundable orders (to=payee, refunded=false)
+    3. Refund the first refundable order via pay_sendTransaction
+    
+    Prerequisites: payee account must be created first (create_payee_account task).
+    """
+    PAYEE = "pp1h0p9jfvwgq5elnz79vqthep8t8k77xfpr0rvuw"
+    
+    DOMAIN = {"name": "PayChain", "version": "1", "chainId": CHAIN_IDS["pay"], "verifyingContract": ZERO_ADDR}
+    EIP712 = [{"name":"name","type":"string"},{"name":"version","type":"string"},
+              {"name":"chainId","type":"uint256"},{"name":"verifyingContract","type":"address"}]
+    
+    # 1. Check payee exists
+    r = requests.post(f"{BULLONE}/api/proxy/pay-rpc",
+        json={"jsonrpc":"2.0","id":1,"method":"pay_getPayee","params":[WALLET_ADDR, "latest"]},
+        headers={"Content-Type":"application/json"})
+    payee = r.json().get("result")
+    if not payee:
+        print("  Payee refund: skip (no payee account)")
+        return False
+    
+    # 2. Search for refundable orders (check a range of recent order IDs)
+    r2 = requests.post(f"{BULLONE}/api/proxy/pay-rpc",
+        json={"jsonrpc":"2.0","id":1,"method":"pay_getTransactionCount","params":[WALLET_ADDR, "latest"]},
+        headers={"Content-Type":"application/json"})
+    nonce_val = int(r2.json().get("result", "0x0"), 16)
+    
+    # Estimate order ID range from nonce
+    order_id = 152384  # Known successful order ID as reference
+    refundable = None
+    
+    # Try a range of order IDs
+    for oid in range(order_id - 20, order_id + 50):
+        r3 = requests.post(f"{BULLONE}/api/proxy/pay-rpc",
+            json={"jsonrpc":"2.0","id":1,"method":"pay_getOrder","params":[oid]},
+            headers={"Content-Type":"application/json"})
+        result = r3.json().get("result", {})
+        if result and result.get("to") == PAYEE and not result.get("refunded"):
+            refundable = result
+            break
+    
+    if not refundable:
+        print("  Payee refund: skip (no refundable orders)")
+        return False
+    
+    # 3. Refund the order
+    TYPES = {
+        "EIP712Domain": EIP712,
+        "Refund": [{"name":"nonce","type":"uint64"},{"name":"orderId","type":"uint64"}],
+    }
+    
+    msg = {"nonce": nonce_val, "orderId": int(refundable["order_id"], 16)}
+    full = {"types": TYPES, "primaryType": "Refund", "domain": DOMAIN, "message": msg}
+    signable = encode_typed_data(full_message=full)
+    signed = acct.sign_message(signable)
+    sig = parse_sig(signed.signature.hex())
+    
+    action = {"type": "refund", "orderId": int(refundable["order_id"], 16)}
+    params = {"nonce": nonce_val, "action": action, "signature": sig}
+    
+    r4 = requests.post(f"{BULLONE}/api/proxy/pay-rpc",
+        json={"jsonrpc":"2.0","id":1,"method":"pay_sendTransaction","params":[params]},
+        headers={"Content-Type":"application/json"})
+    resp = r4.json()
+    success = resp.get("result") is not None
+    err = resp.get("error", {}).get("message", "") if not success else ""
+    print(f"  Payee refund (order {int(refundable['order_id'], 16)}): {'✅' if success else '❌ ' + err[:80]}")
+    return success
+
+
 def pay_standard_transfer(session):
     """Standard transfer via pay chain — single entry to wallet address (hex)."""
     TOKEN = USDT_CORE  # USDT on pay chain
@@ -746,6 +820,12 @@ def run_wallet(pk):
         except Exception as e: print(f"  Receive payment error: {e}")
     else:
         print("  Receive payment: skip (daily, already done today)")
+
+    if should_run(task_map, "payee_refund"):
+        try: pay_refund_order()
+        except Exception as e: print(f"  Payee refund error: {e}")
+    else:
+        print("  Payee refund: skip (one_time, already done)")
 
     # Wait for backend detection (retry with increasing delays)
     for delay, label in [(60, "1min"), (120, "2min"), (300, "5min")]:

@@ -1,0 +1,8 @@
+.env
+*.pyc
+__pycache__/
+logs/
+node_modules/
+browser-data/
+*.zip
+*.crx

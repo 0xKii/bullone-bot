@@ -1,6 +1,6 @@
 # BullOne Bot
 
-Bot otomatis untuk daily tasks [BullOne.ai](https://www.bullone.ai) testnet campaign.
+Bot otomatis untuk daily tasks [BullOne.ai](https://www.bullone.ai/campaign?ref=_Hyuzay4PE8r) testnet campaign.
 
 ## Tasks
 

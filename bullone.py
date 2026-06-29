@@ -291,27 +291,28 @@ def bridge_core_to_chain(w3, target_chain_id):
 
 
 def bridge_sepolia_to_core(w3, sepolia_w3):
-    """Bridge ETH from Sepolia to Core — uses depositTo on Core bridge precompile.
-    The bridge_eth_to_core task detects ETH deposited via Core chain bridge.
+    """Bridge ETH from Sepolia to Core — uses depositNative on Sepolia bridge contract.
+    The bridge_eth_to_core task detects ETH bridged from Sepolia to Core.
+    Contract: 0xE4352Dcc13531D256824f5B1C8Cc8F517A432144 (Sepolia side)
     """
-    core_bal = w3.eth.get_balance(WALLET_ADDR)
-    if core_bal < w3.to_wei(0.0005, "ether"):
-        print(f"  Sepolia bridge: skip (insufficient Core ETH: {w3.from_wei(core_bal, 'ether')})")
+    sepolia_bal = sepolia_w3.eth.get_balance(WALLET_ADDR)
+    if sepolia_bal < sepolia_w3.to_wei(0.0005, "ether"):
+        print(f"  Sepolia bridge: skip (insufficient Sepolia ETH: {sepolia_w3.from_wei(sepolia_bal, 'ether')})")
         return False
 
-    nonce = w3.eth.get_transaction_count(WALLET_ADDR)
-    selector = w3.keccak(text="depositTo(address,uint64)")[:4]
-    # Bridge to Spot chain (10699) — only Spot and Pay supported as targets
-    calldata = selector + abi_encode(['address', 'uint64'], [WALLET_ADDR, CHAIN_IDS["spot"]])
-    gas_price = w3.eth.gas_price
+    # depositNative(address to) — send ETH + value to Sepolia bridge contract
+    selector = sepolia_w3.keccak(text="depositNative(address)")[:4]
+    calldata = selector + abi_encode(['address'], [WALLET_ADDR])
+    gas_price = sepolia_w3.eth.gas_price
+    nonce = sepolia_w3.eth.get_transaction_count(WALLET_ADDR)
     tx = {
-        "from": WALLET_ADDR, "to": BRIDGE_PRECOMPILE, "data": calldata,
-        "value": w3.to_wei(0.0001, "ether"),
-        "nonce": nonce, "gas": 500000, "gasPrice": gas_price,
-        "chainId": w3.eth.chain_id,
+        "from": WALLET_ADDR, "to": ETH_BRIDGE_SEPOLIA, "data": calldata,
+        "value": sepolia_w3.to_wei(0.001, "ether"),
+        "nonce": nonce, "gas": 300000, "gasPrice": gas_price,
+        "chainId": CHAIN_IDS["sepolia"],
     }
-    receipt = send_raw(w3, tx)
-    print(f"  Bridge ETH→Core: {'✅' if receipt.status == 1 else '❌'} TX={receipt.transactionHash.hex()[:20]}...")
+    receipt = send_raw(sepolia_w3, tx)
+    print(f"  Bridge Sepolia→Core: {'✅' if receipt.status == 1 else '❌'} TX={receipt.transactionHash.hex()[:20]}...")
     return receipt.status == 1
 
 
@@ -477,7 +478,16 @@ def pay_chain_transfer():
     Amount: 1,000,000 (1 USDT, 6 decimals) — must be above payee's min_payment_amount.
     
     Prerequisites: need USDT bridged to pay chain first (via bridge_to_pay_chain task).
+    If daily_payment_to_payee is already "done", skip to avoid redundant transfer.
     """
+    # Guard: if task is already done today, skip — backend rejects duplicate payment orders
+    r = requests.get(f"{BULLONE}/api/campaign/tasks")
+    tasks = r.json().get("data", {}).get("tasks", [])
+    task = next((t for t in tasks if t.get("taskKey") == "daily_payment_to_payee"), None)
+    if task and task.get("claimStatus") == "done":
+        print("  Pay transfer: skip (task already done today, avoiding redundant transfer)")
+        return False
+
     # Known payee address (bech32) — this wallet's payee on pay chain
     PAYEE = "pp1h0p9jfvwgq5elnz79vqthep8t8k77xfpr0rvuw"
     TOKEN = USDT_CORE  # USDT token address

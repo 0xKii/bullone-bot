@@ -596,6 +596,79 @@ def pay_refund_order():
     return success
 
 
+def pay_create_payee():
+    """Create payee account via EIP-712 CreatePayee action on pay chain."""
+    DOMAIN = {"name": "PayChain", "version": "1", "chainId": CHAIN_IDS["pay"], "verifyingContract": ZERO_ADDR}
+    EIP712 = [{"name":"name","type":"string"},{"name":"version","type":"string"},
+              {"name":"chainId","type":"uint256"},{"name":"verifyingContract","type":"address"}]
+    
+    r = requests.post(f"{BULLONE}/api/proxy/pay-rpc",
+        json={"jsonrpc":"2.0","id":1,"method":"pay_getTransactionCount","params":[WALLET_ADDR, "latest"]},
+        headers={"Content-Type":"application/json"})
+    nonce_val = int(r.json().get("result", "0x0"), 16)
+    
+    TYPES = {
+        "EIP712Domain": EIP712,
+        "CreatePayee": [{"name":"nonce","type":"uint64"},{"name":"owner","type":"address"},{"name":"name","type":"bytes"}],
+    }
+    
+    msg = {"nonce": nonce_val, "owner": WALLET_ADDR, "name": b"payee"}
+    full = {"types": TYPES, "primaryType": "CreatePayee", "domain": DOMAIN, "message": msg}
+    signable = encode_typed_data(full_message=full)
+    signed = acct.sign_message(signable)
+    sig = parse_sig(signed.signature.hex())
+    
+    action = {"type": "createPayee", "owner": WALLET_ADDR, "name": "0x7061796565"}  # "payee" hex
+    params = {"nonce": nonce_val, "action": action, "signature": sig}
+    
+    r2 = requests.post(f"{BULLONE}/api/proxy/pay-rpc",
+        json={"jsonrpc":"2.0","id":1,"method":"pay_sendTransaction","params":[params]},
+        headers={"Content-Type":"application/json"})
+    resp = r2.json()
+    success = resp.get("result") is not None
+    err = resp.get("error", {}).get("message", "") if not success else ""
+    print(f"  Create payee: {'✅' if success else '❌ ' + err[:80]}")
+    return success
+
+
+def pay_withdraw():
+    """Withdraw from payee account via EIP-712 Withdraw action."""
+    PAYEE = "pp1h0p9jfvwgq5elnz79vqthep8t8k77xfpr0rvuw"
+    
+    DOMAIN = {"name": "PayChain", "version": "1", "chainId": CHAIN_IDS["pay"], "verifyingContract": ZERO_ADDR}
+    EIP712 = [{"name":"name","type":"string"},{"name":"version","type":"string"},
+              {"name":"chainId","type":"uint256"},{"name":"verifyingContract","type":"address"}]
+    
+    r = requests.post(f"{BULLONE}/api/proxy/pay-rpc",
+        json={"jsonrpc":"2.0","id":1,"method":"pay_getTransactionCount","params":[WALLET_ADDR, "latest"]},
+        headers={"Content-Type":"application/json"})
+    nonce_val = int(r.json().get("result", "0x0"), 16)
+    
+    TYPES = {
+        "EIP712Domain": EIP712,
+        "Withdraw": [{"name":"nonce","type":"uint64"},{"name":"payee","type":"bytes"},
+                     {"name":"token","type":"address"},{"name":"amount","type":"uint128"}],
+    }
+    
+    msg = {"nonce": nonce_val, "payee": PAYEE.encode(), "token": USDT_CORE, "amount": 1000000}
+    full = {"types": TYPES, "primaryType": "Withdraw", "domain": DOMAIN, "message": msg}
+    signable = encode_typed_data(full_message=full)
+    signed = acct.sign_message(signable)
+    sig = parse_sig(signed.signature.hex())
+    
+    action = {"type": "withdraw", "payee": PAYEE, "token": USDT_CORE, "amount": hex(1000000)}
+    params = {"nonce": nonce_val, "action": action, "signature": sig}
+    
+    r2 = requests.post(f"{BULLONE}/api/proxy/pay-rpc",
+        json={"jsonrpc":"2.0","id":1,"method":"pay_sendTransaction","params":[params]},
+        headers={"Content-Type":"application/json"})
+    resp = r2.json()
+    success = resp.get("result") is not None
+    err = resp.get("error", {}).get("message", "") if not success else ""
+    print(f"  Payee withdraw: {'✅' if success else '❌ ' + err[:80]}")
+    return success
+
+
 def pay_standard_transfer(session):
     """Standard transfer via pay chain — single entry to wallet address (hex)."""
     TOKEN = USDT_CORE  # USDT on pay chain
@@ -826,6 +899,18 @@ def run_wallet(pk):
         except Exception as e: print(f"  Payee refund error: {e}")
     else:
         print("  Payee refund: skip (one_time, already done)")
+
+    if should_run(task_map, "create_payee_account"):
+        try: pay_create_payee()
+        except Exception as e: print(f"  Create payee error: {e}")
+    else:
+        print("  Create payee: skip (one_time, already done)")
+
+    if should_run(task_map, "payee_withdraw"):
+        try: pay_withdraw()
+        except Exception as e: print(f"  Payee withdraw error: {e}")
+    else:
+        print("  Payee withdraw: skip (one_time, already done)")
 
     # Wait for backend detection (retry with increasing delays)
     for delay, label in [(60, "1min"), (120, "2min"), (300, "5min")]:
